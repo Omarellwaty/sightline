@@ -232,6 +232,88 @@ class PdfFontService {
     }
   }
 
+  /// Changes the font of a PDF file and saves it to a new file
+  Future<bool> changePdfFont({
+    required String inputFilePath,
+    required String outputFilePath,
+    required String fontName,
+    double fontSize = 14.0,
+    double wordSpacing = 0.0,
+    double letterSpacing = 0.0,
+    double lineSpacing = 1.0,
+  }) async {
+    try {
+      debugPrint('Starting PDF font conversion...');
+      debugPrint('Input file: $inputFilePath');
+      debugPrint('Output file: $outputFilePath');
+      debugPrint('Font: $fontName, Size: $fontSize');
+      
+      // Load the input PDF document
+      final File inputFile = File(inputFilePath);
+      if (!await inputFile.exists()) {
+        debugPrint('Input file does not exist');
+        return false;
+      }
+      
+      final List<int> fileBytes = await inputFile.readAsBytes();
+      final PdfDocument pdfDocument = PdfDocument(inputBytes: fileBytes);
+      
+      // Create a new PDF document for the output
+      final PdfDocument outputDocument = PdfDocument();
+      
+      // Create the selected font with appropriate style based on font family
+      PdfFontStyle fontStyle = PdfFontStyle.regular;
+      
+      // Use bold for OpenDyslexic to improve readability
+      if (fontName == 'OpenDyslexic') {
+        fontStyle = PdfFontStyle.bold;
+      }
+      
+      // Create metadata for the PDF to indicate the font used
+      outputDocument.documentInformation.author = 'PDF Font Converter';
+      outputDocument.documentInformation.title = 'Converted with $fontName font';
+      outputDocument.documentInformation.subject = 'Font: $fontName, Size: $fontSize, Word Spacing: $wordSpacing, Letter Spacing: $letterSpacing, Line Spacing: $lineSpacing';
+      
+      final selectedFont = PdfFontService.createFont(fontName, fontSize, fontStyle);
+      
+      // Process each page
+      final int pageCount = pdfDocument.pages.count;
+      for (int i = 0; i < pageCount; i++) {
+        debugPrint('Processing page ${i + 1} of $pageCount...');
+        
+        // Extract text from the page
+        String extractedText = await PdfFontService.extractTextFromPage(pdfDocument, i);
+        
+        // Create a new page with the text using the selected font and spacing
+        await PdfFontService.createPageWithText(
+          outputDocument, 
+          extractedText, 
+          selectedFont, 
+          wordSpacing, 
+          letterSpacing, 
+          lineSpacing
+        );
+        
+        debugPrint('Page ${i + 1} processed successfully');
+      }
+      
+      // Save the output document
+      final List<int> outputBytes = outputDocument.saveSync();
+      final File outputFile = File(outputFilePath);
+      await outputFile.writeAsBytes(outputBytes);
+      
+      // Dispose the documents
+      pdfDocument.dispose();
+      outputDocument.dispose();
+      
+      debugPrint('PDF font conversion completed successfully');
+      return true;
+    } catch (e) {
+      debugPrint('Error changing PDF font: $e');
+      return false;
+    }
+  }
+
   /// Formats the extracted text with page separators
   static String formatExtractedText(List<String> extractedTextPages) {
     String combinedText = '';

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import '../data/data_model/user_data.dart';
 import '../main.dart';
+import '../providor/auth_service.dart'; // 🔥 Import AuthService
 import 'sign_in_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Needed for Firebase User
 
 class RegistrationScreen extends StatefulWidget {
   @override
@@ -14,25 +15,32 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
-  void _submitForm() {
-    print('Submitting form...'); // Debug print
+  final AuthService _authService = AuthService(); // 🔥 Create instance
+
+  void _submitForm() async {
     if (_formKey.currentState!.validate()) {
-      print('Form is valid'); // Debug print
-      UserData userData = UserData(
-        email: _emailController.text,
-        password: _passwordController.text,
+      // Sign Up with Firebase
+      final result = await _authService.signUpWithEmailAndPassword(
+        _emailController.text,
+        _passwordController.text,
       );
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Registered: ${userData.toString()}')),
-      );
+      if (result['success']) {
+        // Success
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Registration Successful!')),
+        );
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => MainScreen(userData: userData)),
-      );
-    } else {
-      print('Form validation failed'); // Debug print
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => MainScreen(userData: null)),
+        );
+      } else {
+        // Error
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result['message'])),
+        );
+      }
     }
   }
 
@@ -48,7 +56,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('Create Account'),
-        backgroundColor: Color(0xFF1E90FF), // Match your app’s theme
+        backgroundColor: Color(0xFF1E90FF),
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -61,7 +69,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
               children: [
                 Text(
                   'Create Your Account',
-                  style: TextStyle(fontSize: 24,
+                  style: TextStyle(
+                      fontSize: 24,
                       fontWeight: FontWeight.bold,
                       color: Colors.black87),
                   textAlign: TextAlign.center,

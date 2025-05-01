@@ -9,6 +9,7 @@ import 'package:cross_file/cross_file.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/pdf_font_service.dart';
 import '../services/file_service.dart';
+import '../services/pdf_firebase_service.dart';
 
 class ChangePdfFontScreen extends StatefulWidget {
   final Function(Map<String, dynamic>) onFileUploaded;
@@ -195,95 +196,107 @@ class _ChangePdfFontScreenState extends State<ChangePdfFontScreen> {
   Future<void> _processPdf(List<int> fileBytes) async {
     try {
       setState(() {
-        _statusMessage = 'Converting PDF...';
+        _statusMessage = 'Processing PDF...';
         _progressValue = 0.5;
       });
-
-      // Load the PDF document
-      final PdfDocument pdfDocument = PdfDocument(inputBytes: fileBytes);
       
-      // Create a new PDF document for the output
-      final PdfDocument outputDocument = PdfDocument();
+      // Get the temporary directory path
+      final tempDir = await getTemporaryDirectory();
+      final tempPath = tempDir.path;
       
-      // Create the selected font
-      final PdfFont selectedFont = PdfFontService.createFont(
-        _selectedFont, 
-        _fontSize, 
-        PdfFontStyle.regular
-      );
+      // Create input file path
+      final inputFilePath = '$tempPath/input_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final inputFile = File(inputFilePath);
+      await inputFile.writeAsBytes(fileBytes);
       
-      // Process the PDF with the selected font and spacing options
-      List<String> extractedTextPages = await PdfFontService.processAllPages(
-        pdfDocument, 
-        outputDocument, 
-        (current, total) {
-          setState(() {
-            _statusMessage = 'Processing page $current of $total...';
-            _progressValue = 0.5 + (0.3 * current / total);
-          });
-        },
-        fontFamily: _selectedFont,
+      // Create output file path
+      final outputFilePath = '$tempPath/output_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      
+      setState(() {
+        _statusMessage = 'Changing font to $_selectedFont...';
+        _progressValue = 0.7;
+      });
+      
+      // Use the PdfFontService to change the font
+      final pdfFontService = PdfFontService();
+      final success = await pdfFontService.changePdfFont(
+        inputFilePath: inputFilePath,
+        outputFilePath: outputFilePath,
+        fontName: _selectedFont,
         fontSize: _fontSize,
         wordSpacing: _wordSpacing,
         letterSpacing: _letterSpacing,
-        lineSpacing: _lineSpacing
+        lineSpacing: _lineSpacing,
       );
       
-      // Combine all extracted text
-      _extractedText = PdfFontService.formatExtractedText(extractedTextPages);
+      if (!success) {
+        throw Exception('Failed to change PDF font');
+      }
       
-      // Update status
-      setState(() {
-        _statusMessage = 'Saving converted PDF...';
-        _progressValue = 0.8;
-      });
-      
-      // Generate output file name
-      String outputFileName = _inputFileName!.replaceAll('.pdf', '_converted.pdf');
-      
-      // Save the document
-      _outputFilePath = await PdfFontService.savePdfDocument(outputDocument, outputFileName);
-      
-      // Dispose the documents
+      // Extract text from the PDF for text-to-speech
+      final pdfDocument = PdfDocument(inputBytes: fileBytes);
+      final pdfTextExtractor = PdfTextExtractor(pdfDocument);
+      _extractedText = pdfTextExtractor.extractText();
       pdfDocument.dispose();
-      outputDocument.dispose();
       
-      // Update UI
+      // Upload the modified PDF to Firebase
+      try {
+        setState(() {
+          _statusMessage = 'Uploading to Firebase...';
+          _progressValue = 0.9;
+        });
+        
+        final pdfFirebaseService = PdfFirebaseService();
+        final result = await pdfFirebaseService.uploadModifiedPdf(
+          pdfFile: File(outputFilePath),
+          originalFileName: _inputFileName ?? 'Unknown',
+          selectedFont: _selectedFont,
+          fontSize: _fontSize,
+          wordSpacing: _wordSpacing,
+          letterSpacing: _letterSpacing,
+          lineSpacing: _lineSpacing,
+          context: context,
+        );
+        
+        debugPrint('PDF uploaded to Firebase: ${result['downloadUrl']}');
+        
+        // Call the onFileUploaded callback with the result
+        widget.onFileUploaded({
+          'name': result['fileName'],
+          'timestamp': DateTime.now().toString(),
+          'downloadUrl': result['downloadUrl'],
+          'type': 'modified_pdf',
+          'font': _selectedFont,
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PDF uploaded to Firebase successfully')),
+        );
+      } catch (firebaseError) {
+        debugPrint('Error uploading to Firebase: $firebaseError');
+        // Continue with the process even if Firebase upload fails
+      }
+      
       setState(() {
+        _outputFilePath = outputFilePath;
         _isLoading = false;
-        _statusMessage = 'PDF converted successfully';
+        _statusMessage = 'Font changed successfully!';
         _progressValue = 1.0;
       });
       
-      // Notify parent about the uploaded file
-      widget.onFileUploaded({
-        'filePath': _outputFilePath,
-        'fileName': outputFileName,
-        'extractedText': _extractedText,
-      });
-      
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('PDF converted successfully'),
-          action: SnackBarAction(
-            label: 'View',
-            onPressed: () {
-              // Open the PDF viewer
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => PdfViewerScreen(
-                    pdfPath: _outputFilePath!,
-                    pdfName: outputFileName,
-                    extractedText: _extractedText,
-                  ),
-                ),
-              );
-            },
+      // Navigate to the PDF viewer screen
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PdfViewerScreen(
+              pdfPath: outputFilePath,
+              pdfName: _inputFileName!.replaceAll('.pdf', '_converted.pdf'),
+              extractedText: _extractedText,
+            ),
           ),
-        ),
-      );
+        );
+      }
     } catch (e) {
       _handleError(e);
     }

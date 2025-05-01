@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'extracted_text_screen.dart';
+import '../services/pdf_firebase_service.dart';
 
 class ExtractTextFromPdfScreen extends StatefulWidget {
   final Function(Map<String, dynamic>) onFileUploaded;
@@ -121,133 +122,176 @@ class _ExtractTextFromPdfScreenState extends State<ExtractTextFromPdfScreen> {
       filePicker.FilePickerResult? result = await filePicker.FilePicker.platform.pickFiles(
         type: filePicker.FileType.custom,
         allowedExtensions: ['pdf'],
+        allowMultiple: false,
+        withData: true,
       );
 
       if (result == null || result.files.isEmpty) {
         setState(() {
           _isLoading = false;
-          _statusMessage = 'No file selected';
+          _statusMessage = '';
           _progressValue = 0.0;
         });
         print('No file selected');
         return '';
       }
 
-      filePicker.PlatformFile file = result.files.first;
-      print('Selected file: ${file.name} (${file.size} bytes)');
-      print('File path: ${file.path}');
+      final file = result.files.first;
+      print('File selected: ${file.name}, Path: ${file.path}, Has bytes: ${file.bytes != null}');
 
       setState(() {
-        _statusMessage = 'Analyzing PDF...';
+        _statusMessage = 'Processing PDF...';
         _progressValue = 0.3;
       });
 
-      // First, try to extract text directly from the PDF
       String extractedText = '';
-      bool hasExtractableText = false;
+      bool usedOcr = false;
 
+      // Try native text extraction first
       try {
-        print('Attempting direct text extraction...');
-        setState(() {
-          _statusMessage = 'Extracting text from PDF...';
-          _progressValue = 0.4;
-        });
-
-        if (file.path != null) {
-          // Use SyncfusionFlutterPdf for direct text extraction
-          final syncfusionFlutterPdf.PdfDocument document = syncfusionFlutterPdf.PdfDocument(
-            inputBytes: await File(file.path!).readAsBytes(),
-          );
-
+        if (file.bytes != null) {
+          // Use Syncfusion PDF library for text extraction
+          final syncfusionFlutterPdf.PdfDocument document = syncfusionFlutterPdf.PdfDocument(inputBytes: file.bytes!);
           _totalPages = document.pages.count;
+          
           print('PDF has $_totalPages pages');
-
+          
           // Extract text from each page
-          for (int i = 0; i < document.pages.count; i++) {
-            _currentPage = i + 1;
+          for (int i = 0; i < _totalPages; i++) {
             setState(() {
+              _currentPage = i + 1;
               _statusMessage = 'Extracting text from page $_currentPage of $_totalPages...';
-              _progressValue = 0.4 + (0.3 * (_currentPage / _totalPages));
+              _progressValue = 0.3 + (0.4 * _currentPage / _totalPages);
             });
-
-            syncfusionFlutterPdf.PdfTextExtractor extractor = syncfusionFlutterPdf.PdfTextExtractor(document);
-            String pageText = extractor.extractText(startPageIndex: i);
             
-            if (pageText.isNotEmpty && pageText.trim().length > 10) {
-              hasExtractableText = true;
-              extractedText += pageText + '\n\n';
-              print('Extracted ${pageText.length} characters from page ${i+1}');
-            } else {
-              print('Page ${i+1} has no extractable text');
+            final syncfusionFlutterPdf.PdfTextExtractor extractor = syncfusionFlutterPdf.PdfTextExtractor(document);
+            final String pageText = extractor.extractText(startPageIndex: i, endPageIndex: i);
+            
+            if (pageText.trim().isNotEmpty) {
+              extractedText += 'Page ${i + 1}:\n$pageText\n\n';
             }
           }
-
+          
+          document.dispose();
+        } else if (file.path != null) {
+          // Use file path
+          final bytes = await File(file.path!).readAsBytes();
+          final syncfusionFlutterPdf.PdfDocument document = syncfusionFlutterPdf.PdfDocument(inputBytes: bytes);
+          _totalPages = document.pages.count;
+          
+          print('PDF has $_totalPages pages');
+          
+          // Extract text from each page
+          for (int i = 0; i < _totalPages; i++) {
+            setState(() {
+              _currentPage = i + 1;
+              _statusMessage = 'Extracting text from page $_currentPage of $_totalPages...';
+              _progressValue = 0.3 + (0.4 * _currentPage / _totalPages);
+            });
+            
+            final syncfusionFlutterPdf.PdfTextExtractor extractor = syncfusionFlutterPdf.PdfTextExtractor(document);
+            final String pageText = extractor.extractText(startPageIndex: i, endPageIndex: i);
+            
+            if (pageText.trim().isNotEmpty) {
+              extractedText += 'Page ${i + 1}:\n$pageText\n\n';
+            }
+          }
+          
           document.dispose();
         }
       } catch (e) {
-        print('Error during direct text extraction: $e');
-        // Continue to OCR if direct extraction fails
+        print('Error in native text extraction: $e');
+        extractedText = '';
       }
 
-      // If direct extraction didn't yield good results, try OCR
-      if (!hasExtractableText || extractedText.trim().length < 20) {
-        print('Direct text extraction failed or yielded poor results, trying OCR...');
+      // If native extraction failed or returned empty text, try OCR
+      if (extractedText.trim().isEmpty) {
         setState(() {
-          _statusMessage = 'PDF appears to be scanned, using OCR...';
-          _progressValue = 0.7;
+          _statusMessage = 'Native text extraction failed. Trying OCR...';
+          _progressValue = 0.5;
         });
-
-        if (_totalPages > 1) {
-          extractedText = await _extractTextWithOcrMultiPage(file);
-        } else {
-          extractedText = await _extractTextWithOcr(file);
+        
+        print('Native text extraction failed or returned empty text. Trying OCR...');
+        
+        try {
+          if (_totalPages > 1) {
+            extractedText = await _extractTextWithOcrMultiPage(file);
+          } else {
+            extractedText = await _extractTextWithOcr(file);
+          }
+          usedOcr = true;
+        } catch (ocrError) {
+          print('OCR extraction error: $ocrError');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error extracting text with OCR: $ocrError')),
+          );
         }
       }
 
-      // Save the extracted text to a file
-      if (extractedText.isNotEmpty) {
+      // Upload the PDF and extracted text to Firebase
+      try {
         setState(() {
-          _statusMessage = 'Saving extracted text...';
+          _statusMessage = 'Uploading to Firebase...';
           _progressValue = 0.9;
         });
-
-        try {
-          final directory = await getApplicationDocumentsDirectory();
-          final fileName = 'extracted_${DateTime.now().millisecondsSinceEpoch}.txt';
-          final filePath = '${directory.path}/$fileName';
-          
-          await File(filePath).writeAsString(extractedText);
-          
-          print('Text saved to $filePath');
-          
-          // Call the callback function with the file information
-          widget.onFileUploaded({
-            'name': fileName,
-            'timestamp': DateTime.now().toString(),
-            'type': 'pdf_extract',
-            'content': extractedText,
-          });
-        } catch (e) {
-          print('Error saving text file: $e');
+        
+        // Create a temporary file if we only have bytes
+        File pdfFile;
+        if (file.path != null) {
+          pdfFile = File(file.path!);
+        } else {
+          final tempDir = await getTemporaryDirectory();
+          pdfFile = File('${tempDir.path}/${file.name}');
+          await pdfFile.writeAsBytes(file.bytes!);
         }
+        
+        final pdfFirebaseService = PdfFirebaseService();
+        final result = await pdfFirebaseService.uploadExtractedTextPdf(
+          pdfFile: pdfFile,
+          extractedText: extractedText,
+          originalFileName: file.name,
+          isOcr: usedOcr,
+          context: context,
+        );
+        
+        debugPrint('PDF uploaded to Firebase: ${result['downloadUrl']}');
+        
+        // Call the onFileUploaded callback with the result
+        widget.onFileUploaded({
+          'name': file.name,
+          'timestamp': DateTime.now().toString(),
+          'downloadUrl': result['downloadUrl'],
+          'type': 'extracted_text_pdf',
+          'extractedText': extractedText.substring(0, min(100, extractedText.length)) + '...',
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PDF uploaded to Firebase successfully')),
+        );
+      } catch (firebaseError) {
+        debugPrint('Error uploading to Firebase: $firebaseError');
+        // Continue with the process even if Firebase upload fails
       }
 
       setState(() {
         _isLoading = false;
         _statusMessage = '';
-        _progressValue = 0.0;
-        _totalPages = 0;
-        _currentPage = 0;
+        _progressValue = 1.0;
       });
 
       return extractedText;
     } catch (e) {
-      print('Error during PDF text extraction: $e');
       setState(() {
         _isLoading = false;
         _statusMessage = 'Error: $e';
         _progressValue = 0.0;
       });
+      
+      print('Error extracting text: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+      
       return '';
     }
   }

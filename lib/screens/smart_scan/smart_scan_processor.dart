@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
+import 'package:untitled/services/firebase_service.dart';
 
 class ScanResult {
   final String text;
@@ -31,6 +32,7 @@ class SmartScanProcessor {
     bool isHandwritingMode = false,
     int recognitionQuality = 2,
     bool enhancedCorrection = true,
+    BuildContext? context,
   }) async {
     try {
       // Apply image preprocessing for better recognition
@@ -98,6 +100,35 @@ class SmartScanProcessor {
       
       // Format the text for better display
       extractedText = _formatTextForDisplay(extractedText);
+      
+      // Upload the image and extracted text to Firebase
+      try {
+        if (context != null) {
+          // Show uploading message
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Uploading to Firebase...')),
+          );
+        }
+        
+        final FirebaseService firebaseService = FirebaseService();
+        final result = await firebaseService.uploadScannedDocument(
+          imageFile: imageFile,
+          extractedText: extractedText,
+          confidence: confidence,
+          context: context,
+        );
+        
+        debugPrint('Document uploaded to Firebase: ${result['downloadUrl']}');
+        
+        if (context != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Document uploaded successfully')),
+          );
+        }
+      } catch (firebaseError) {
+        debugPrint('Error uploading to Firebase: $firebaseError');
+        // Continue with the process even if Firebase upload fails
+      }
       
       return ScanResult(
         text: extractedText,

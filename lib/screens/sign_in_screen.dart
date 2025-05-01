@@ -3,6 +3,8 @@ import '../data/data_model/user_data.dart';
 import '../main.dart';
 import 'registration_screen.dart';
 import 'forget_password_screen.dart';
+import '../providor/auth_service.dart'; // Don't forget to import AuthService
+import 'package:firebase_auth/firebase_auth.dart'; // For FirebaseAuthException
 
 class SignInScreen extends StatefulWidget {
   @override
@@ -10,32 +12,46 @@ class SignInScreen extends StatefulWidget {
 }
 
 class _SignInScreenState extends State<SignInScreen> {
-  final _formKey = GlobalKey<FormState>(); // Ensure this is correctly defined
+  final _formKey = GlobalKey<FormState>();
   final _emailOrUsernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  void _submitSignIn() {
-    print('Submitting sign-in...'); // Debug print
+  void _submitSignIn() async {
+    print('Submitting sign-in...');
+
     if (_formKey.currentState!.validate()) {
-      print('Sign-in form is valid'); // Debug print
-      UserData userData = UserData(
-        // username: _emailOrUsernameController.text,
-        email: '',
-        // phone: '',
-        password: _passwordController.text,
-      );
+      final email = _emailOrUsernameController.text.trim();
+      final password = _passwordController.text.trim();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(
-            'Signed in with: ${_emailOrUsernameController.text}')),
-      );
+      try {
+        final result = await AuthService().signInWithEmailAndPassword(email, password);
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => MainScreen(userData: userData)),
-      );
+        if (result['success']) {
+          final user = result['user'] as User;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Signed in as: ${user.email}')),
+          );
+
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => MainScreen(userData: UserData(
+              email: user.email ?? '',
+              password: '',
+            ))),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result['message'])),
+          );
+        }
+      } catch (e) {
+        print('Unexpected sign-in error: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('An unexpected error occurred.')),
+        );
+      }
     } else {
-      print('Sign-in form validation failed'); // Debug print
+      print('Sign-in form validation failed');
     }
   }
 
@@ -63,7 +79,7 @@ class _SignInScreenState extends State<SignInScreen> {
         child: SingleChildScrollView(
           padding: EdgeInsets.all(24.0),
           child: Form(
-            key: _formKey, // Ensure the form key is attached
+            key: _formKey,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.center,
@@ -90,7 +106,7 @@ class _SignInScreenState extends State<SignInScreen> {
                             labelText: 'Email', border: InputBorder.none),
                         validator: (value) {
                           if (value == null || value.isEmpty) {
-                            return 'Please enter email or username';
+                            return 'Please enter email';
                           }
                           return null;
                         },
@@ -124,7 +140,7 @@ class _SignInScreenState extends State<SignInScreen> {
                 ),
                 SizedBox(height: 20),
                 ElevatedButton(
-                  onPressed: _submitSignIn, // Ensure this is correctly wired
+                  onPressed: _submitSignIn,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Color(0xFF1E90FF),
                     padding: EdgeInsets.symmetric(horizontal: 40, vertical: 15),
@@ -149,5 +165,4 @@ class _SignInScreenState extends State<SignInScreen> {
       ),
     );
   }
-
 }

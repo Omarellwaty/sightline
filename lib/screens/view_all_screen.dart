@@ -9,7 +9,7 @@ class ViewAllScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('All Recent Files'),
+        title: const Text('All Recent Files'),
         backgroundColor: Color(0xFF1E90FF),
       ),
       body: Container(

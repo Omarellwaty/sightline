@@ -104,6 +104,7 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
         isHandwritingMode: _isHandwritingMode,
         recognitionQuality: _recognitionQuality,
         enhancedCorrection: _enhancedCorrection,
+        context: context, // Pass context for Firebase upload
       );
       
       if (!mounted) return;
@@ -111,6 +112,13 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
       setState(() {
         _isProcessing = false;
         _statusMessage = '';
+      });
+      
+      // Call the onFileUploaded callback with the result
+      widget.onFileUploaded({
+        'text': result.text,
+        'confidence': result.confidence,
+        'isHandwritingMode': _isHandwritingMode,
       });
       
       // Navigate to result screen

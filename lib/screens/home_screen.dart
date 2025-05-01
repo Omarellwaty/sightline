@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
-import 'package:share_plus/share_plus.dart';
+import 'dart:io';
+import 'dart:math';
+import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
+import '../services/firebase_service.dart';
 import 'view_all_screen.dart';
 import 'smart_scan/smart_scan_home_screen.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-import 'package:file_picker/file_picker.dart';
 import 'extract_text_from_pdf_screen.dart';
 import 'text_to_speech_screen.dart';
 import 'change_pdf_font_screen.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 
 class HomeScreen extends StatefulWidget {
   final List<Map<String, dynamic>> recentFiles;
@@ -29,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final Set<int> _selectedIndices = {};
   late TabController _tabController;
   int _currentTabIndex = 0;
+  bool _isSelectionMode = false;
 
   @override
   void initState() {
@@ -163,6 +170,235 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
+  // Handle opening a file when tapped
+  Future<void> _openFile(Map<String, dynamic> file) async {
+    try {
+      // Print file details for debugging
+      print('Opening file: ${file.toString()}');
+      
+      // Get file information with null safety
+      final String? fileType = file['type']?.toString();
+      final String? downloadUrl = file['downloadUrl']?.toString();
+      final String? originalPath = file['originalPath']?.toString();
+      final String fileName = file['name']?.toString() ?? 'Unknown File';
+      
+      print('File type: $fileType');
+      print('Download URL: $downloadUrl');
+      print('Original path: $originalPath');
+      
+      if (downloadUrl == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot open file: Download URL not available')),
+        );
+        return;
+      }
+      
+      // Determine file category based on type or other properties
+      bool isPdf = false;
+      bool isImage = false;
+      
+      // Check if it's a PDF file
+      if (fileType != null && (
+          fileType == 'pdf' || 
+          fileType == 'modified_pdfs' || 
+          fileType == 'extracted_text_pdfs' ||
+          fileType.contains('pdf'))) {
+        isPdf = true;
+      }
+      
+      // Check if it's an image file
+      if (fileType != null && (
+          fileType == 'image' || 
+          fileType == 'smart_scan' || 
+          fileType == 'scanned_documents' ||
+          fileType.contains('image'))) {
+        isImage = true;
+      }
+      
+      // If we can't determine the type from the 'type' field, try to guess from other properties
+      if (!isPdf && !isImage) {
+        if (downloadUrl.toLowerCase().endsWith('.pdf')) {
+          isPdf = true;
+        } else if (downloadUrl.toLowerCase().contains('.jpg') || 
+                  downloadUrl.toLowerCase().contains('.jpeg') || 
+                  downloadUrl.toLowerCase().contains('.png')) {
+          isImage = true;
+        }
+      }
+      
+      // Handle PDF files
+      if (isPdf) {
+        // Try to open local file if it exists
+        if (originalPath != null && await File(originalPath).exists()) {
+          print('Opening local PDF file: $originalPath');
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PdfViewerScreen(
+                pdfPath: originalPath,
+                pdfName: fileName,
+                extractedText: file['extractedText']?.toString() ?? '',
+              ),
+            ),
+          );
+        } else {
+          // Try to download from Firebase
+          try {
+            print('Local file not found, trying to download from Firebase');
+            
+            // Show loading indicator
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (BuildContext context) {
+                return const Center(
+                  child: CircularProgressIndicator(),
+                );
+              },
+            );
+            
+            // Create a temporary file
+            final tempDir = await getTemporaryDirectory();
+            final tempFile = File('${tempDir.path}/${DateTime.now().millisecondsSinceEpoch}.pdf');
+            
+            // Download the file
+            final response = await http.get(Uri.parse(downloadUrl));
+            await tempFile.writeAsBytes(response.bodyBytes);
+            
+            // Close loading dialog
+            Navigator.pop(context);
+            
+            // Open the downloaded file
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PdfViewerScreen(
+                  pdfPath: tempFile.path,
+                  pdfName: fileName,
+                  extractedText: file['extractedText']?.toString() ?? '',
+                ),
+              ),
+            );
+          } catch (e) {
+            // Close loading dialog if open
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+            
+            print('Error downloading PDF: $e');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Could not download PDF: $e')),
+            );
+          }
+        }
+      } 
+      // Handle image files
+      else if (isImage) {
+        print('Opening image file');
+        // Show image in a dialog
+        showDialog(
+          context: context,
+          builder: (context) => Dialog(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AppBar(
+                  title: Text(fileName),
+                  automaticallyImplyLeading: false,
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                Flexible(
+                  child: Image.network(
+                    downloadUrl,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Center(
+                        child: CircularProgressIndicator(
+                          value: loadingProgress.expectedTotalBytes != null
+                              ? loadingProgress.cumulativeBytesLoaded / 
+                                  (loadingProgress.expectedTotalBytes ?? 1)
+                              : null,
+                        ),
+                      );
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      print('Error loading image: $error');
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error, size: 50, color: Colors.red),
+                          const SizedBox(height: 16),
+                          Text('Error loading image: $error'),
+                          const SizedBox(height: 16),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                if (file['extractedText'] != null)
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Text(
+                      'Extracted Text: ${file['extractedText']}',
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      } 
+      // Handle all other file types
+      else {
+        print('Unknown file type: $fileType');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Cannot determine how to open this file. Please try downloading it directly.'),
+            action: SnackBarAction(
+              label: 'Details',
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text('File Details'),
+                    content: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('Name: $fileName'),
+                          Text('Type: ${fileType ?? "Unknown"}'),
+                          Text('URL: ${downloadUrl.substring(0, min(30, downloadUrl.length))}...'),
+                        ],
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: Text('Close'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error opening file: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error opening file: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -284,15 +520,33 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       IconData fileIcon;
                       Color iconColor;
                       
-                      if (file['type'] == 'pdf') {
+                      // Get file type with null safety
+                      final String fileType = file['type']?.toString() ?? 'unknown';
+                      
+                      if (fileType == 'pdf' || fileType == 'modified_pdfs' || fileType == 'extracted_text_pdfs') {
                         fileIcon = Icons.picture_as_pdf;
                         iconColor = isDark ? Colors.purpleAccent : Colors.red;
-                      } else if (file['type'] == 'image' || file['type'] == 'smart_scan') {
+                      } else if (fileType == 'image' || fileType == 'smart_scan' || fileType == 'scanned_documents') {
                         fileIcon = Icons.image;
                         iconColor = isDark ? Colors.purple : Colors.blue;
                       } else {
                         fileIcon = Icons.insert_drive_file;
                         iconColor = isDark ? Colors.white70 : Colors.grey;
+                      }
+                      
+                      // Get file name and timestamp with null safety
+                      final String fileName = file['name']?.toString() ?? 'Unnamed File';
+                      final String timestamp = file['timestamp']?.toString() ?? 'Unknown date';
+                      
+                      // Format the timestamp to be more readable
+                      String formattedDate = 'Unknown date';
+                      try {
+                        if (timestamp != 'Unknown date') {
+                          final DateTime dateTime = DateTime.parse(timestamp);
+                          formattedDate = '${dateTime.day}/${dateTime.month}/${dateTime.year} ${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
+                        }
+                      } catch (e) {
+                        print('Error formatting date: $e');
                       }
                       
                       return Card(
@@ -302,7 +556,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         child: ListTile(
                           leading: Icon(fileIcon, color: iconColor, size: 36),
                           title: Text(
-                            file['name'],
+                            fileName,
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w500,
@@ -310,32 +564,49 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             ),
                           ),
                           subtitle: Text(
-                            file['timestamp'],
+                            formattedDate,
                             style: TextStyle(
-                              fontSize: 14,
-                              color: isDark ? Colors.white60 : Colors.grey[600],
+                              fontSize: 12,
+                              color: isDark ? Colors.white70 : Colors.grey[600],
                             ),
                           ),
-                          trailing: Checkbox(
-                            value: isSelected,
-                            onChanged: (bool? value) {
+                          trailing: isSelected
+                              ? Icon(
+                                  Icons.check_circle,
+                                  color: isDark ? Colors.purpleAccent : const Color(0xFF1E90FF),
+                                )
+                              : Icon(
+                                  Icons.arrow_forward_ios,
+                                  size: 16,
+                                  color: isDark ? Colors.white54 : Colors.grey,
+                                ),
+                          onTap: () {
+                            if (_isSelectionMode) {
                               setState(() {
-                                if (value == true) {
-                                  _selectedIndices.add(index);
-                                } else {
+                                if (isSelected) {
                                   _selectedIndices.remove(index);
+                                } else {
+                                  _selectedIndices.add(index);
                                 }
                               });
-                            },
-                            activeColor: isDark ? Colors.purple : const Color(0xFF1E90FF),
-                          ),
-                          onTap: () {
-                            String message = file.containsKey('text') && file['text'].isNotEmpty
-                                ? 'Extracted Text: ${file['text'].length > 50 ? file['text'].substring(0, 50) + '...' : file['text']}'
-                                : 'File tapped: ${file['name']}';
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(message)),
-                            );
+                            } else {
+                              // Open the file
+                              _openFile(file);
+                            }
+                          },
+                          onLongPress: () {
+                            setState(() {
+                              if (!_isSelectionMode) {
+                                _isSelectionMode = true;
+                                _selectedIndices.add(index);
+                              } else {
+                                if (isSelected) {
+                                  _selectedIndices.remove(index);
+                                } else {
+                                  _selectedIndices.add(index);
+                                }
+                              }
+                            });
                           },
                         ),
                       );
@@ -380,6 +651,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           widget.onFilesDeleted(_selectedIndices.toList());
                           setState(() {
                             _selectedIndices.clear(); // Clear selection after deletion
+                            _isSelectionMode = false;
                           });
                         }
                       },

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'extract_text_from_pdf_screen.dart';
 import '../controllers/text_to_speech_controller.dart';
 import '../models/text_to_speech_model.dart';
+import '../services/storage_service.dart';
+import '../services/database_service.dart';
 
 /// View class for Text-to-Speech feature
 /// Handles all UI presentation and user interaction
@@ -19,6 +21,10 @@ class TextToSpeechScreen extends StatefulWidget {
 class _TextToSpeechScreenState extends State<TextToSpeechScreen> {
   // Controller instance to handle all TTS logic
   late TextToSpeechController _controller;
+  final StorageService _storageService = StorageService();
+  final DatabaseService _databaseService = DatabaseService();
+  // Use a temporary user ID for testing - in a real app, you'd get this from authentication
+  final String _userId = 'user_${DateTime.now().millisecondsSinceEpoch}';
 
   @override
   void initState() {
@@ -51,23 +57,67 @@ class _TextToSpeechScreenState extends State<TextToSpeechScreen> {
   Future<void> _importPdf() async {
     try {
       // Navigate to the PDF extraction screen
-      final extractedText = await Navigator.push(
+      final result = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => ExtractTextFromPdfScreen(
-            onFileUploaded: (data) {
-              // This is just a placeholder, we'll use the returned text directly
+            onFileUploaded: (data) async {
+              // This callback will be called when a file is uploaded
               return data;
             },
           ),
         ),
       );
       
-      // If text was extracted and returned, update the text controller
-      if (extractedText != null && extractedText is String && extractedText.isNotEmpty) {
-        setState(() {
-          _controller.model.textController.text = extractedText;
-        });
+      // Check if we have valid data
+      if (result != null && result is Map<String, dynamic>) {
+        // Extract text content
+        final String extractedText = result['content'] ?? '';
+        
+        // If we have a file path, upload to Firebase
+        if (result['pdfPath'] != null && result['pdfPath'] is String) {
+          try {
+            setState(() {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Uploading PDF to cloud storage...')),
+              );
+            });
+            
+            // Upload file to Firebase Storage
+            final File pdfFile = File(result['pdfPath']);
+            final String? downloadURL = await _storageService.uploadFile(pdfFile, _userId);
+            
+            // Only save to Firestore if we got a valid download URL
+            if (downloadURL != null) {
+              // Save metadata to Firestore
+              await _databaseService.saveFileData(
+                userId: _userId,
+                fileName: result['name'] ?? 'document.pdf',
+                downloadURL: downloadURL,
+              );
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('PDF uploaded to cloud storage successfully')),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to upload PDF to cloud storage')),
+              );
+            }
+          } catch (e) {
+            print('Error uploading to Firebase: $e');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error uploading to cloud: $e')),
+            );
+          }
+        }
+        
+        // If text was extracted and returned, update the text controller
+        if (extractedText.isNotEmpty) {
+          setState(() {
+            _controller.model.textController.text = extractedText;
+          });
+        }
       }
     } catch (e) {
       print('Error importing PDF: $e');

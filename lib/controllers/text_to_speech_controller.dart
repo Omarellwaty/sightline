@@ -143,38 +143,89 @@ class TextToSpeechController {
   
   // Function to preprocess text for TTS
   String _preprocessText(String text) {
-    // Remove any special characters that might cause issues
-    String processed = text.replaceAll(RegExp(r'[^\w\s.,;:!?()-]'), ' ');
+    // Check if the text contains Arabic characters
+    bool containsArabic = RegExp(r'[\u0600-\u06FF]').hasMatch(text);
     
-    // Limit text length if too long (some TTS engines have limits)
-    if (processed.length > 4000) {
-      processed = processed.substring(0, 4000);
-      print('Text truncated to 4000 characters for TTS compatibility');
-    }
-    
-    // Ensure there are no extremely long words (can cause issues in some TTS engines)
-    List<String> words = processed.split(' ');
-    List<String> processedWords = words.map((word) {
-      if (word.length > 100) {
-        return word.substring(0, 100);
+    if (containsArabic) {
+      // For Arabic text, we need to be more careful with character removal
+      // Only remove truly problematic characters while preserving Arabic script
+      String processed = text.replaceAll(RegExp(r'[^\w\s\u0600-\u06FF.,;:!?()-]'), ' ');
+      
+      // Limit text length if too long (some TTS engines have limits)
+      if (processed.length > 4000) {
+        processed = processed.substring(0, 4000);
+        print('Arabic text truncated to 4000 characters for TTS compatibility');
       }
-      return word;
-    }).toList();
+      
+      return processed;
+    } else {
+      // For non-Arabic text, use the original preprocessing
+      // Remove any special characters that might cause issues
+      String processed = text.replaceAll(RegExp(r'[^\w\s.,;:!?()-]'), ' ');
+      
+      // Limit text length if too long (some TTS engines have limits)
+      if (processed.length > 4000) {
+        processed = processed.substring(0, 4000);
+        print('Text truncated to 4000 characters for TTS compatibility');
+      }
+      
+      // Ensure there are no extremely long words (can cause issues in some TTS engines)
+      List<String> words = processed.split(' ');
+      List<String> processedWords = words.map((word) {
+        if (word.length > 100) {
+          return word.substring(0, 100);
+        }
+        return word;
+      }).toList();
+      
+      return processedWords.join(' ');
+    }
+  }
+  
+  // Function to detect text language and set appropriate TTS language
+  Future<void> _detectAndSetLanguage(String text) async {
+    // Simple detection of Arabic text - checks if the text contains Arabic characters
+    bool containsArabic = RegExp(r'[\u0600-\u06FF]').hasMatch(text);
     
-    return processedWords.join(' ');
+    if (containsArabic) {
+      // If text contains Arabic characters, set language to Arabic
+      if (model.selectedLanguage != 'ar-SA') {
+        print('Arabic text detected, switching to Arabic TTS');
+        await setLanguage('ar-SA');
+      }
+    } else {
+      // If no Arabic characters, default to English if not already set
+      if (model.selectedLanguage == 'ar-SA') {
+        print('Non-Arabic text detected, switching to English TTS');
+        await setLanguage('en-US');
+      }
+    }
   }
   
   // Function to speak text
-  Future<bool> speak(BuildContext context) async {
+  Future<bool> speak(BuildContext context, {String? specificText}) async {
     print('speak method called');
-    print('Text content: "${model.textController.text}"');
     
-    if (model.textController.text.isEmpty) {
+    // Determine which text to speak
+    String textToProcess = specificText ?? model.textController.text;
+    print('Text content to process: "${textToProcess.substring(0, textToProcess.length > 50 ? 50 : textToProcess.length)}..."');
+    
+    if (textToProcess.isEmpty) {
       print('Text is empty, showing snackbar');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please enter some text to speak')),
+        const SnackBar(content: Text('Please enter some text to speak')),
       );
       return false;
+    }
+    
+    // Auto-detect language and set appropriate TTS language
+    await _detectAndSetLanguage(textToProcess);
+    
+    // If we're using page selection and no specific text was provided,
+    // use the currently selected page
+    if (specificText == null && model.pages.isNotEmpty) {
+      textToProcess = model.currentPageContent;
+      print('Using selected page: ${model.selectedPageIndex + 1}');
     }
     
     if (model.isPlaying) {
@@ -189,7 +240,7 @@ class TextToSpeechController {
         _shouldContinueSpeaking = true;
         
         // Preprocess text to avoid common TTS issues
-        String textToSpeak = _preprocessText(model.textController.text);
+        String textToSpeak = _preprocessText(textToProcess);
         print('Preprocessed text length: ${textToSpeak.length}');
         
         // Try to speak in smaller chunks if the text is long
@@ -312,8 +363,11 @@ class TextToSpeechController {
   
   // Function to build tappable words
   List<Widget> buildTappableWords() {
+    // Use current page content if available, otherwise use all text
+    String textToUse = model.pages.isNotEmpty ? model.currentPageContent : model.textController.text;
+    
     // Split text into words and limit to 100 words maximum to prevent overflow
-    List<String> words = model.textController.text.split(RegExp(r'\s+'));
+    List<String> words = textToUse.split(RegExp(r'\s+'));
     if (words.length > 100) {
       words = words.sublist(0, 100);
     }
@@ -348,7 +402,7 @@ class TextToSpeechController {
       
       if (result == 1) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('TTS test started successfully')),
+          const SnackBar(content: Text('TTS test started successfully')),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -361,6 +415,20 @@ class TextToSpeechController {
         SnackBar(content: Text('Error during TTS test: $e')),
       );
     }
+  }
+  
+  // Function to process text and extract pages
+  void processTextPages() {
+    model.setPages(model.textController.text);
+  }
+  
+  // Function to speak a specific page
+  Future<bool> speakPage(BuildContext context, int pageIndex) async {
+    if (pageIndex >= 0 && pageIndex < model.pages.length) {
+      model.setSelectedPageIndex(pageIndex);
+      return await speak(context, specificText: model.currentPageContent);
+    }
+    return false;
   }
   
   // Function to check TTS status

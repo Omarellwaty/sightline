@@ -6,12 +6,20 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
 
 import 'smart_scan_processor.dart';
+import 'tesseract_scan_processor.dart';
+import 'hybrid_scan_processor.dart';
 import 'smart_scan_result_screen.dart';
+import 'scan_result.dart';
 
 class SmartScanHomeScreen extends StatefulWidget {
   final Function(Map<String, dynamic>) onFileUploaded;
+  final ImageSource? initialImageSource; // Optional parameter to auto-start scanning
 
-  const SmartScanHomeScreen({super.key, required this.onFileUploaded});
+  const SmartScanHomeScreen({
+    super.key, 
+    required this.onFileUploaded,
+    this.initialImageSource, // If provided, will automatically start scanning
+  });
 
   @override
   State<SmartScanHomeScreen> createState() => _SmartScanHomeScreenState();
@@ -23,10 +31,23 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
   bool _isHandwritingMode = false;
   int _recognitionQuality = 2; // 1=fast, 2=balanced, 3=accurate
   bool _enhancedCorrection = true;
+  int _ocrEngine = 0; // 0=ML Kit, 1=Tesseract, 2=Hybrid
   
   @override
   void initState() {
     super.initState();
+    
+    // If initialImageSource is provided, automatically start scanning
+    if (widget.initialImageSource != null) {
+      // Use a small delay to ensure the screen is fully built
+      Future.delayed(Duration(milliseconds: 100), () {
+        if (widget.initialImageSource == ImageSource.camera) {
+          _pickImageFromCamera();
+        } else if (widget.initialImageSource == ImageSource.gallery) {
+          _pickImageFromGallery();
+        }
+      });
+    }
   }
 
   @override
@@ -96,16 +117,39 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
 
   Future<void> _processImage(File imageFile) async {
     try {
-      final SmartScanProcessor processor = SmartScanProcessor();
+      ScanResult result;
       
-      // Process the image
-      final result = await processor.processImage(
-        imageFile: imageFile,
-        isHandwritingMode: _isHandwritingMode,
-        recognitionQuality: _recognitionQuality,
-        enhancedCorrection: _enhancedCorrection,
-        context: context, // Pass context for Firebase upload
-      );
+      if (_ocrEngine == 0) {
+        // Use ML Kit
+        final processor = SmartScanProcessor();
+        result = await processor.processImage(
+          imageFile: imageFile,
+          isHandwritingMode: _isHandwritingMode,
+          recognitionQuality: _recognitionQuality,
+          enhancedCorrection: _enhancedCorrection,
+          context: context, // Pass context for Firebase upload
+        );
+      } else if (_ocrEngine == 1) {
+        // Use Tesseract OCR
+        final processor = TesseractScanProcessor();
+        result = await processor.processImage(
+          imageFile: imageFile,
+          isHandwritingMode: _isHandwritingMode,
+          recognitionQuality: _recognitionQuality,
+          enhancedCorrection: _enhancedCorrection,
+          context: context, // Pass context for Firebase upload
+        );
+      } else {
+        // Use Hybrid approach (recommended for handwriting)
+        final processor = HybridScanProcessor();
+        result = await processor.processImage(
+          imageFile: imageFile,
+          isHandwritingMode: _isHandwritingMode,
+          recognitionQuality: _recognitionQuality,
+          enhancedCorrection: _enhancedCorrection,
+          context: context, // Pass context for Firebase upload
+        );
+      }
       
       if (!mounted) return;
       
@@ -315,6 +359,44 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
                         });
                       },
                     ),
+                    
+                    Divider(),
+                    
+                    // OCR Engine selector
+                    Text('OCR Engine', style: TextStyle(fontWeight: FontWeight.bold)),
+                    RadioListTile(
+                      title: Text('ML Kit (Recommended)'),
+                      subtitle: Text('Google ML Kit - Best for text & handwriting recognition'),
+                      value: 0,
+                      groupValue: _ocrEngine,
+                      onChanged: (value) {
+                        setState(() {
+                          _ocrEngine = value as int;
+                        });
+                      },
+                    ),
+                    RadioListTile(
+                      title: Text('Tesseract OCR'),
+                      subtitle: Text('Open source OCR - Works offline'),
+                      value: 1,
+                      groupValue: _ocrEngine,
+                      onChanged: (value) {
+                        setState(() {
+                          _ocrEngine = value as int;
+                        });
+                      },
+                    ),
+                    RadioListTile(
+                      title: Text('Hybrid'),
+                      subtitle: Text('Combines ML Kit & Tesseract (experimental)'),
+                      value: 2,
+                      groupValue: _ocrEngine,
+                      onChanged: (value) {
+                        setState(() {
+                          _ocrEngine = value as int;
+                        });
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -331,6 +413,7 @@ class _SmartScanHomeScreenState extends State<SmartScanHomeScreen> {
                       this._isHandwritingMode = _isHandwritingMode;
                       this._recognitionQuality = _recognitionQuality;
                       this._enhancedCorrection = _enhancedCorrection;
+                      this._ocrEngine = _ocrEngine;
                     });
                     Navigator.of(context).pop();
                   },

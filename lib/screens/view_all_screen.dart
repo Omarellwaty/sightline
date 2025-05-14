@@ -1,24 +1,25 @@
 import 'package:flutter/material.dart';
 
 class ViewAllScreen extends StatelessWidget {
-  final List<Map<String, dynamic>> recentFiles; // Updated to Map
+  final String title;
+  final List<Map<String, dynamic>> items; // Updated to Map
 
-  ViewAllScreen({required this.recentFiles});
+  ViewAllScreen({required this.title, required this.items});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('All Recent Files'),
+        title: Text(title),
         backgroundColor: Color(0xFF1E90FF),
       ),
       body: Container(
         color: Colors.white,
         child: ListView.builder(
           padding: EdgeInsets.all(16.0),
-          itemCount: recentFiles.length,
+          itemCount: items.length,
           itemBuilder: (context, index) {
-            final file = recentFiles[index];
+            final file = items[index];
             return Card(
               elevation: 2,
               margin: EdgeInsets.symmetric(vertical: 8.0),

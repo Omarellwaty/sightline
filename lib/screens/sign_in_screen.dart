@@ -5,6 +5,7 @@ import 'registration_screen.dart';
 import 'forget_password_screen.dart';
 import '../providor/auth_service.dart'; // Don't forget to import AuthService
 import 'package:firebase_auth/firebase_auth.dart'; // For FirebaseAuthException
+import '../services/database_service.dart'; // For DatabaseService
 
 class SignInScreen extends StatefulWidget {
   @override
@@ -24,20 +25,45 @@ class _SignInScreenState extends State<SignInScreen> {
       final password = _passwordController.text.trim();
 
       try {
+        // Show loading indicator
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return Center(
+              child: CircularProgressIndicator(),
+            );
+          },
+        );
+        
         final result = await AuthService().signInWithEmailAndPassword(email, password);
+        
+        // Hide loading indicator
+        Navigator.of(context).pop();
 
         if (result['success']) {
           final user = result['user'] as User;
+          
+          // Load user data from Firestore
+          final databaseService = DatabaseService();
+          final userId = user.uid; // Use the actual user ID from Firebase Auth
+          
+          // Get user files
+          final files = await databaseService.getUserFiles(userId);
+          
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Signed in as: ${user.email}')),
           );
 
           Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (context) => MainScreen(userData: UserData(
-              email: user.email ?? '',
-              password: '',
-            ))),
+            MaterialPageRoute(builder: (context) => MainScreen(
+              userData: UserData(
+                email: user.email ?? '',
+                password: '',
+              ),
+              initialRecentFiles: files,
+            )),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -45,6 +71,11 @@ class _SignInScreenState extends State<SignInScreen> {
           );
         }
       } catch (e) {
+        // Hide loading indicator if still showing
+        if (Navigator.canPop(context)) {
+          Navigator.of(context).pop();
+        }
+        
         print('Unexpected sign-in error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('An unexpected error occurred.')),
@@ -84,6 +115,28 @@ class _SignInScreenState extends State<SignInScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                Container(
+                  width: 150,
+                  height: 150,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.blue.withOpacity(0.2),
+                        spreadRadius: 3,
+                        blurRadius: 7,
+                        offset: Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  padding: EdgeInsets.all(15),
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                SizedBox(height: 25),
                 Text(
                   'Welcome back you\'ve been missed!',
                   style: TextStyle(fontSize: 24,

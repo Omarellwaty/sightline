@@ -3,18 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
 import 'package:untitled/services/firebase_service.dart';
-
-class ScanResult {
-  final String text;
-  final double confidence;
-  final String rawText;
-
-  ScanResult({
-    required this.text,
-    this.confidence = 0.0,
-    required this.rawText,
-  });
-}
+import 'scan_result.dart';
 
 class SmartScanProcessor {
   late final TextRecognizer _textRecognizer;
@@ -38,12 +27,57 @@ class SmartScanProcessor {
       // Apply image preprocessing for better recognition
       File enhancedImage = await _enhanceImageForOCR(imageFile);
       
-      final inputImage = InputImage.fromFile(enhancedImage);
+      String extractedText = '';
+      double confidence = 0.0;
       
-      // Process the image with appropriate settings based on handwriting mode
-      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+      if (isHandwritingMode) {
+        // For handwriting, use image segmentation approach for better accuracy
+        debugPrint('Using image segmentation for handwriting recognition');
+        
+        // Step 1: Segment the image into smaller chunks (lines or words)
+        List<img.Image> segments = await _segmentImage(enhancedImage);
+        debugPrint('Created ${segments.length} image segments');
+        
+        // Step 2: Process each segment separately
+        List<String> segmentTexts = [];
+        double totalConfidence = 0.0;
+        
+        for (int i = 0; i < segments.length; i++) {
+          // Save segment to temporary file
+          final tempDir = await Directory.systemTemp.createTemp('segment_');
+          final segmentFile = File('${tempDir.path}/segment_$i.jpg');
+          await segmentFile.writeAsBytes(img.encodeJpg(segments[i], quality: 100));
+          
+          // Process the segment
+          final segmentInputImage = InputImage.fromFile(segmentFile);
+          final segmentRecognizedText = await _textRecognizer.processImage(segmentInputImage);
+          
+          // Add to results if text was found
+          if (segmentRecognizedText.text.isNotEmpty) {
+            segmentTexts.add(segmentRecognizedText.text);
+            totalConfidence += 0.8; // Default confidence for successful segments
+          }
+          
+          // Clean up temporary file
+          try {
+            await segmentFile.delete();
+            await tempDir.delete();
+          } catch (e) {
+            // Ignore cleanup errors
+          }
+        }
+        
+        // Combine results from all segments
+        extractedText = segmentTexts.join(' ');
+        confidence = segments.isNotEmpty ? totalConfidence / segments.length : 0.0;
+        
+      } else {
+        // For printed text, process the whole image at once
+        final inputImage = InputImage.fromFile(enhancedImage);
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        extractedText = recognizedText.text;
+      }
       
-      String extractedText = recognizedText.text;
       String rawExtractedText = extractedText; // Store raw text
       
       if (extractedText.isEmpty) {
@@ -56,7 +90,7 @@ class SmartScanProcessor {
       }
       
       // Apply different processing based on mode and quality settings
-      double confidence = 0.0;
+      // confidence is already defined above, so we'll reuse it
       
       if (isHandwritingMode) {
         // For handwriting, process each text block separately for better results
@@ -64,27 +98,14 @@ class SmartScanProcessor {
         double totalConfidence = 0.0;
         int blockCount = 0;
         
-        for (TextBlock block in recognizedText.blocks) {
-          String blockText = block.text;
-          
-          // Calculate confidence for this block (based on recognition score if available)
-          double blockConfidence = 0.7; // Default confidence
-          
-          // Process handwritten text with specialized corrections
-          String processedText = _applyAdvancedHandwritingCorrections(blockText);
-          
-          combinedText += processedText + ' ';
-          totalConfidence += blockConfidence;
-          blockCount++;
-        }
-        
-        if (blockCount > 0) {
-          confidence = totalConfidence / blockCount;
-          extractedText = combinedText.trim();
-        }
+        // Use the extracted text we already have from the segmentation approach
+        // This is already processed line by line in the segmentation code above
+        // No need to use combinedText, blockCount, or totalConfidence
+        // as we already have extractedText and confidence from the segmentation process
         
         // Apply additional handwriting-specific processing
         extractedText = _processHandwrittenText(extractedText);
+        extractedText = _applyHandwritingSpellChecking(extractedText);
       } else {
         // For printed text
         extractedText = _processExtractedText(extractedText);
@@ -146,6 +167,242 @@ class SmartScanProcessor {
     }
   }
   
+  // Segment image into smaller chunks for better recognition
+  Future<List<img.Image>> _segmentImage(File imageFile) async {
+    List<img.Image> segments = [];
+    
+    try {
+      // Read and decode the image
+      final bytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(bytes);
+      
+      if (image == null) {
+        debugPrint('Failed to decode image for segmentation');
+        return segments;
+      }
+      
+      // Convert to grayscale for better processing
+      final grayImage = img.grayscale(image);
+      
+      // Step 1: Detect horizontal lines of text using projection profile
+      List<Map<String, int>> textLines = _detectTextLines(grayImage);
+      debugPrint('Detected ${textLines.length} text lines');
+      
+      // Step 2: Create segments from the detected lines
+      for (var line in textLines) {
+        // Skip very small lines (likely noise)
+        if (line['height']! < 20 || line['width']! < 50) continue;
+        
+        // Create a segment for this line
+        img.Image lineSegment = img.copyCrop(
+          grayImage,
+          x: line['x']!,
+          y: line['y']!,
+          width: line['width']!,
+          height: line['height']!
+        );
+        
+        // Add padding around the segment for better recognition
+        int padding = 10;
+        img.Image paddedSegment = img.Image(
+          width: lineSegment.width + padding * 2,
+          height: lineSegment.height + padding * 2
+        );
+        
+        // Fill with white background
+        for (int y = 0; y < paddedSegment.height; y++) {
+          for (int x = 0; x < paddedSegment.width; x++) {
+            paddedSegment.setPixel(x, y, img.ColorRgb8(255, 255, 255));
+          }
+        }
+        
+        // Copy the line segment into the padded image
+        for (int y = 0; y < lineSegment.height; y++) {
+          for (int x = 0; x < lineSegment.width; x++) {
+            paddedSegment.setPixel(
+              x + padding,
+              y + padding,
+              lineSegment.getPixel(x, y)
+            );
+          }
+        }
+        
+        segments.add(paddedSegment);
+      }
+      
+      // If no segments were detected, return the whole image as a single segment
+      if (segments.isEmpty) {
+        debugPrint('No segments detected, using whole image');
+        segments.add(grayImage);
+      }
+      
+      return segments;
+    } catch (e) {
+      debugPrint('Error in image segmentation: $e');
+      // Return the whole image as a single segment in case of error
+      final image = img.decodeImage(await imageFile.readAsBytes());
+      if (image != null) {
+        segments.add(img.grayscale(image));
+      }
+      return segments;
+    }
+  }
+  
+  // Enhance contrast using adaptive histogram equalization
+  img.Image _enhanceContrast(img.Image image) {
+    try {
+      // Create a new image with the same dimensions
+      img.Image enhancedImage = img.Image(width: image.width, height: image.height);
+      
+      // Find the minimum and maximum pixel values in the image
+      int minPixel = 255;
+      int maxPixel = 0;
+      
+      for (int y = 0; y < image.height; y++) {
+        for (int x = 0; x < image.width; x++) {
+          final pixel = image.getPixel(x, y);
+          final gray = img.getLuminance(pixel).round();
+          minPixel = gray < minPixel ? gray : minPixel;
+          maxPixel = gray > maxPixel ? gray : maxPixel;
+        }
+      }
+      
+      // Calculate the range of pixel values
+      final range = maxPixel - minPixel;
+      
+      // If the range is too small, apply a more aggressive contrast enhancement
+      if (range < 100) {
+        // Apply a more aggressive contrast enhancement for low contrast images
+        for (int y = 0; y < image.height; y++) {
+          for (int x = 0; x < image.width; x++) {
+            final pixel = image.getPixel(x, y);
+            final gray = img.getLuminance(pixel).round();
+            
+            // Apply a stronger stretch to increase contrast
+            int newValue = ((gray - minPixel) * 255 ~/ range).clamp(0, 255);
+            
+            // Apply additional contrast boost for mid-range values
+            if (newValue > 30 && newValue < 225) {
+              newValue = (newValue < 128) ? 
+                  (newValue * 0.8).round() : 
+                  (newValue * 1.2).round().clamp(0, 255);
+            }
+            
+            enhancedImage.setPixel(x, y, img.ColorRgb8(newValue, newValue, newValue));
+          }
+        }
+      } else {
+        // For images with good contrast, apply a gentler enhancement
+        for (int y = 0; y < image.height; y++) {
+          for (int x = 0; x < image.width; x++) {
+            final pixel = image.getPixel(x, y);
+            final gray = img.getLuminance(pixel).round();
+            
+            // Apply a standard contrast stretch
+            int newValue = ((gray - minPixel) * 255 ~/ range).clamp(0, 255);
+            enhancedImage.setPixel(x, y, img.ColorRgb8(newValue, newValue, newValue));
+          }
+        }
+      }
+      
+      return enhancedImage;
+    } catch (e) {
+      debugPrint('Error enhancing contrast: $e');
+      return image; // Return original image if enhancement fails
+    }
+  }
+  
+  // Detect text lines in an image using projection profile
+  List<Map<String, int>> _detectTextLines(img.Image image) {
+    List<Map<String, int>> textLines = [];
+    
+    try {
+      // Create a binary image (black and white)
+      img.Image binaryImage = img.Image(width: image.width, height: image.height);
+      for (int y = 0; y < image.height; y++) {
+        for (int x = 0; x < image.width; x++) {
+          var pixel = image.getPixel(x, y);
+          int gray = img.getLuminance(pixel).round();
+          // Apply threshold (adjust as needed)
+          int value = gray < 180 ? 0 : 255;
+          binaryImage.setPixel(x, y, img.ColorRgb8(value, value, value));
+        }
+      }
+      
+      // Calculate horizontal projection profile (sum of black pixels in each row)
+      List<int> horizontalProfile = List<int>.filled(image.height, 0);
+      for (int y = 0; y < image.height; y++) {
+        int blackPixels = 0;
+        for (int x = 0; x < image.width; x++) {
+          var pixel = binaryImage.getPixel(x, y);
+          int gray = img.getLuminance(pixel).round();
+          if (gray < 128) {
+            blackPixels++;
+          }
+        }
+        horizontalProfile[y] = blackPixels;
+      }
+      
+      // Detect text lines based on the profile
+      bool inTextLine = false;
+      int startY = 0;
+      int minLineHeight = 15; // Minimum height for a text line
+      
+      for (int y = 0; y < image.height; y++) {
+        // Start of a text line
+        if (!inTextLine && horizontalProfile[y] > 0) {
+          inTextLine = true;
+          startY = y;
+        }
+        
+        // End of a text line
+        if (inTextLine && (horizontalProfile[y] == 0 || y == image.height - 1)) {
+          inTextLine = false;
+          int endY = y;
+          int lineHeight = endY - startY;
+          
+          // Only consider lines with sufficient height
+          if (lineHeight >= minLineHeight) {
+            // Find the left and right boundaries of the text line
+            int leftX = image.width;
+            int rightX = 0;
+            
+            for (int lineY = startY; lineY < endY; lineY++) {
+              for (int x = 0; x < image.width; x++) {
+                var pixel = binaryImage.getPixel(x, lineY);
+                int gray = img.getLuminance(pixel).round();
+                if (gray < 128) {
+                  leftX = x < leftX ? x : leftX;
+                  rightX = x > rightX ? x : rightX;
+                }
+              }
+            }
+            
+            // Add some margin to the line
+            int margin = 5;
+            leftX = (leftX - margin).clamp(0, image.width - 1);
+            rightX = (rightX + margin).clamp(0, image.width - 1);
+            startY = (startY - margin).clamp(0, image.height - 1);
+            endY = (endY + margin).clamp(0, image.height - 1);
+            
+            // Add the text line to the result
+            textLines.add({
+              'x': leftX,
+              'y': startY,
+              'width': rightX - leftX + 1,
+              'height': endY - startY + 1
+            });
+          }
+        }
+      }
+      
+      return textLines;
+    } catch (e) {
+      debugPrint('Error detecting text lines: $e');
+      return textLines;
+    }
+  }
+  
   // Enhanced image preprocessing for better OCR
   Future<File> _enhanceImageForOCR(File imageFile) async {
     try {
@@ -163,6 +420,20 @@ class SmartScanProcessor {
       
       // Convert to grayscale for better OCR - this is the most important step for text recognition
       processedImage = img.grayscale(processedImage);
+      
+      // Apply adaptive contrast enhancement for better text visibility
+      processedImage = _enhanceContrast(processedImage);
+      
+      // Apply edge enhancement to make text boundaries more distinct
+      processedImage = _enhanceEdges(processedImage);
+      
+      // Apply noise reduction to clean up the image
+      processedImage = img.gaussianBlur(processedImage, radius: 1);
+      
+      // Apply adaptive thresholding for better text/background separation with handwriting
+      if (imageFile.path.contains('handwriting') || imageFile.path.contains('segment')) {
+        processedImage = _applyAdaptiveThreshold(processedImage);
+      }
       
       // Create a temporary file to save the processed image
       final tempDir = await Directory.systemTemp.createTemp('ocr_');
@@ -256,6 +527,186 @@ class SmartScanProcessor {
     processed = _correctCommonWords(processed);
     
     return processed;
+  }
+  
+  // Edge enhancement using Sobel operator to improve text boundary detection
+  img.Image _enhanceEdges(img.Image image) {
+    try {
+      // Create a new image for the edge-enhanced result
+      img.Image enhancedImage = img.Image(width: image.width, height: image.height);
+      
+      // Create a copy of the original image for edge detection
+      img.Image edgeImage = img.Image(width: image.width, height: image.height);
+      
+      // Sobel operator kernels for X and Y directions
+      List<List<int>> sobelX = [
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
+      ];
+      
+      List<List<int>> sobelY = [
+        [-1, -2, -1],
+        [0, 0, 0],
+        [1, 2, 1]
+      ];
+      
+      // Edge enhancement strength - adjust as needed
+      double edgeStrength = 1.5;
+      
+      // Apply Sobel operators to detect edges
+      for (int y = 1; y < image.height - 1; y++) {
+        for (int x = 1; x < image.width - 1; x++) {
+          int gradientX = 0;
+          int gradientY = 0;
+          
+          // Apply Sobel X and Y kernels
+          for (int ky = -1; ky <= 1; ky++) {
+            for (int kx = -1; kx <= 1; kx++) {
+              int pixel = img.getLuminance(image.getPixel(x + kx, y + ky)).round();
+              gradientX += pixel * sobelX[ky + 1][kx + 1];
+              gradientY += pixel * sobelY[ky + 1][kx + 1];
+            }
+          }
+          
+          // Calculate gradient magnitude
+          int magnitude = (gradientX.abs() + gradientY.abs()).round();
+          
+          // Normalize and store in edge image
+          int edgeValue = (magnitude).clamp(0, 255);
+          edgeImage.setPixel(x, y, img.ColorRgb8(edgeValue, edgeValue, edgeValue));
+        }
+      }
+      
+      // Blend the edge image with the original image
+      for (int y = 0; y < image.height; y++) {
+        for (int x = 0; x < image.width; x++) {
+          // Get pixel values from both images
+          int originalValue = img.getLuminance(image.getPixel(x, y)).round();
+          
+          // For edge pixels, use the edge image value
+          int edgeValue = 0;
+          if (x > 0 && y > 0 && x < image.width - 1 && y < image.height - 1) {
+            edgeValue = img.getLuminance(edgeImage.getPixel(x, y)).round();
+          }
+          
+          // Enhance text edges by darkening edge pixels
+          int newValue;
+          if (edgeValue > 30) { // Edge threshold
+            // Darken edges to enhance text boundaries
+            newValue = (originalValue - (edgeValue * edgeStrength / 10).round()).clamp(0, 255);
+          } else {
+            // Keep original value for non-edge pixels
+            newValue = originalValue;
+          }
+          
+          enhancedImage.setPixel(x, y, img.ColorRgb8(newValue, newValue, newValue));
+        }
+      }
+      
+      return enhancedImage;
+    } catch (e) {
+      debugPrint('Error enhancing edges: $e');
+      return image; // Return original image if edge enhancement fails
+    }
+  }
+  
+  // Apply adaptive thresholding for better text/background separation
+  img.Image _applyAdaptiveThreshold(img.Image image) {
+    try {
+      // Create a new image with the same dimensions
+      img.Image thresholdedImage = img.Image(width: image.width, height: image.height);
+      
+      // Window size for adaptive thresholding
+      int windowSize = 15;
+      double c = 5.0; // Constant subtracted from the mean
+      
+      for (int y = 0; y < image.height; y++) {
+        for (int x = 0; x < image.width; x++) {
+          // Calculate the local mean in the window around the pixel
+          int sum = 0;
+          int count = 0;
+          
+          for (int wy = -windowSize ~/ 2; wy <= windowSize ~/ 2; wy++) {
+            for (int wx = -windowSize ~/ 2; wx <= windowSize ~/ 2; wx++) {
+              int nx = x + wx;
+              int ny = y + wy;
+              
+              if (nx >= 0 && nx < image.width && ny >= 0 && ny < image.height) {
+                sum += img.getLuminance(image.getPixel(nx, ny)).round();
+                count++;
+              }
+            }
+          }
+          
+          double mean = count > 0 ? sum / count : 0;
+          
+          // Apply threshold: if pixel < (mean - c), it's foreground (black), otherwise background (white)
+          int pixelValue = img.getLuminance(image.getPixel(x, y)).round();
+          int newValue = (pixelValue < (mean - c)) ? 0 : 255;
+          
+          thresholdedImage.setPixel(x, y, img.ColorRgb8(newValue, newValue, newValue));
+        }
+      }
+      
+      return thresholdedImage;
+    } catch (e) {
+      debugPrint('Error applying adaptive threshold: $e');
+      return image; // Return original image if thresholding fails
+    }
+  }
+  
+  // Apply spell checking with a handwriting-specific dictionary
+  String _applyHandwritingSpellChecking(String text) {
+    if (text.isEmpty) return text;
+    
+    // Dictionary of common handwriting recognition errors
+    Map<String, String> handwritingCorrections = {
+      // Letter confusions
+      'cl': 'd',
+      'rn': 'm',
+      'vv': 'w',
+      'nn': 'm',
+      'ii': 'u',
+      // Common word errors
+      'teh': 'the',
+      'adn': 'and',
+      'wiht': 'with',
+      'frorn': 'from',
+      'rnore': 'more',
+      'sorne': 'some',
+      'thier': 'their',
+      'becuase': 'because',
+      'recieve': 'receive',
+      'differnt': 'different',
+      'problen': 'problem',
+      'problern': 'problem',
+      'rnany': 'many',
+      'tirne': 'time',
+      'sarne': 'same',
+      'narne': 'name',
+      'horne': 'home',
+    };
+    
+    // Split text into words and process each word
+    List<String> words = text.split(' ');
+    List<String> correctedWords = [];
+    
+    for (String word in words) {
+      String correctedWord = word;
+      
+      // Check if the word is in our corrections dictionary
+      handwritingCorrections.forEach((error, correction) {
+        // Only replace if the error is the whole word
+        if (correctedWord.toLowerCase() == error) {
+          correctedWord = correction;
+        }
+      });
+      
+      correctedWords.add(correctedWord);
+    }
+    
+    return correctedWords.join(' ');
   }
   
   // Correct common words based on dictionary

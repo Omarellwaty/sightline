@@ -32,6 +32,11 @@ android {
     namespace = "com.example.untitled"
     compileSdk = 35
     ndkVersion = flutter.ndkVersion
+    
+    // Add this to fix Tesseract OCR namespace issues
+    aaptOptions {
+        noCompress 'tess'
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

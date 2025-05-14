@@ -1,10 +1,33 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  
+  // Constructor to set persistence
+  AuthService() {
+    // Set persistence to LOCAL (persists across app restarts)
+    _auth.setPersistence(Persistence.LOCAL);
+  }
 
   // Get current user
   User? get currentUser => _auth.currentUser;
+  
+  // Check if user is signed in
+  bool get isSignedIn => currentUser != null;
+  
+  // Stream of auth state changes
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  // Hash password for storage (not for authentication)
+  String _hashPassword(String password) {
+    var bytes = utf8.encode(password); // Convert to bytes
+    var digest = sha256.convert(bytes); // Apply SHA-256 hashing
+    return digest.toString(); // Return the hash as a string
+  }
 
   // 🔥 Sign Up (Register)
   Future<Map<String, dynamic>> signUpWithEmailAndPassword(String email, String password) async {
@@ -16,6 +39,19 @@ class AuthService {
         email: email,
         password: password,
       );
+      
+      // Store user information in Firestore
+      if (result.user != null) {
+        String passwordHash = _hashPassword(password);
+        await _firestore.collection('users').doc(result.user!.uid).set({
+          'email': email,
+          'passwordHash': passwordHash,
+          'createdAt': FieldValue.serverTimestamp(),
+          'isAdmin': false, // Default to non-admin
+        });
+        
+        print('User data stored in Firestore with hashed password');
+      }
       
       return {
         'success': true,
